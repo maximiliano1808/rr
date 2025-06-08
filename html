@@ -1,0 +1,454 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Life Squares</title>
+    <!-- Tailwind CSS CDN para estilos rápidos y responsivos -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        /* Fuentes */
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap');
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #1a202c; /* Fondo muy oscuro (gray-900) */
+            display: flex;
+            justify-content: center;
+            align-items: flex-start; /* Alinea arriba para evitar que el contenido se comprima */
+            min-height: 100vh;
+            margin: 0;
+            padding: 2rem 0; /* Añade padding vertical para contenido extenso */
+            color: #e2e8f0; /* Texto claro (gray-200) */
+        }
+        .container {
+            max-width: 800px;
+            width: 95%;
+            padding: 2.5rem;
+            background-color: #2d3748; /* Un poco menos oscuro (gray-800) */
+            border-radius: 1.25rem; /* Bordes más redondeados */
+            box-shadow: 0 10px 20px -5px rgba(0, 0, 0, 0.4), 0 4px 8px -2px rgba(0, 0, 0, 0.2);
+            text-align: center;
+            border: 1px solid #4a5568; /* Borde más claro para contraste */
+        }
+        textarea {
+            font-family: monospace; /* Fuente monoespacio para el código */
+            min-height: 120px; /* Un poco menos alto para dejar espacio al chat */
+            resize: vertical;
+            background-color: #1a202c; /* Fondo oscuro para textarea */
+            color: #f8fafc; /* Texto blanco para textarea */
+            border-color: #4a5568; /* Borde oscuro */
+        }
+        input[type="text"] {
+            background-color: #1a202c; /* Fondo oscuro para input */
+            color: #f8fafc; /* Texto blanco para input */
+            border-color: #4a5568; /* Borde oscuro */
+        }
+        button {
+            transition: background-color 0.3s ease, transform 0.2s ease, box-shadow 0.3s ease;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.3); /* Sombra para botones */
+        }
+        button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 8px rgba(0, 0, 0, 0.4);
+        }
+        button:active {
+            transform: translateY(0);
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.3);
+        }
+        .message-box {
+            background-color: #fed7d7; /* Rojo claro para errores (original) */
+            color: #c53030; /* Rojo para texto (original) */
+            border: 1px solid #fc8181; /* Borde rojo (original) */
+            padding: 0.75rem;
+            border-radius: 0.5rem;
+            margin-top: 1rem;
+            font-size: 0.9rem;
+            text-align: left;
+            display: none; /* Oculto por defecto */
+        }
+        .message-box.show {
+            display: block;
+        }
+        .message-box.success {
+            background-color: #c6f6d5; /* Verde claro para éxito (original) */
+            color: #2f855a; /* Verde para texto (original) */
+            border-color: #68d391; /* Borde verde (original) */
+        }
+        /* Estilos específicos para el chat en tema oscuro */
+        .chat-messages {
+            background-color: #1a202c; /* Fondo más oscuro para el historial de chat */
+            border-color: #4a5568;
+            color: #e2e8f0;
+            max-height: 300px; /* Altura máxima para el scroll */
+            overflow-y: auto; /* Permite el scroll */
+        }
+        .chat-message-item {
+            background-color: #2d3748; /* Fondo de cada mensaje */
+            border-color: #4a5568;
+        }
+        .chat-message-item strong {
+            color: #90cdf4; /* Color del nombre de usuario */
+        }
+    </style>
+    <!-- Firebase SDKs y Lógica de Chat -->
+    <script type="module">
+        // Importaciones de Firebase
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, collection, addDoc, onSnapshot, query, orderBy, serverTimestamp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // Variables globales para Firebase
+        window.firebaseApp = null;
+        window.db = null;
+        window.auth = null;
+        window.userId = null;
+        window.isAuthReady = false;
+
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
+        const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null; // Corregido aquí
+
+        // --- Lógica del Chat ---
+        // Referencias a elementos del DOM para el chat (se obtienen en initChat)
+        let chatMessagesDiv;
+        let chatInput;
+        let sendChatButton;
+        let chatMessageBox;
+        let displayUserIdSpan;
+
+        /**
+         * Muestra un mensaje en el cuadro de mensajes del chat.
+         * @param {string} message - El texto del mensaje.
+         * @param {string} type - 'error' o 'success'.
+         */
+        function showChatMessage(message, type = 'error') {
+            if (chatMessageBox) { // Asegúrate de que el elemento exista
+                chatMessageBox.textContent = message;
+                chatMessageBox.className = `message-box show ${type}`;
+            } else {
+                console.warn("chatMessageBox no encontrado para mostrar el mensaje:", message);
+            }
+        }
+
+        /**
+         * Oculta el cuadro de mensajes del chat.
+         */
+        function hideChatMessage() {
+            if (chatMessageBox) { // Asegúrate de que el elemento exista
+                chatMessageBox.className = 'message-box';
+            }
+        }
+
+        async function initChat() {
+            // Obtener referencias a los elementos del DOM aquí para asegurar que están cargados
+            chatMessagesDiv = document.getElementById('chatMessages');
+            chatInput = document.getElementById('chatInput');
+            sendChatButton = document.getElementById('sendChatButton');
+            chatMessageBox = document.getElementById('chatMessageBox');
+            displayUserIdSpan = document.getElementById('displayUserId');
+
+            if (!window.isAuthReady || !window.db) {
+                if (displayUserIdSpan) displayUserIdSpan.textContent = window.userId || 'N/A (sin Firebase)';
+                showChatMessage('Firebase no inicializado para el chat. Algunas funciones pueden estar limitadas.', 'error');
+                return;
+            }
+
+            if (displayUserIdSpan) displayUserIdSpan.textContent = window.userId;
+
+            const chatCollectionRef = collection(window.db, `artifacts/${window.__app_id}/public/data/chatMessages`);
+            // Query para ordenar por fecha de creación (ascendente)
+            const q = query(chatCollectionRef, orderBy('timestamp'));
+
+            // Escucha cambios en tiempo real
+            if (chatMessagesDiv) { // Asegúrate de que el elemento exista antes de adjuntar el listener
+                onSnapshot(q, (snapshot) => {
+                    chatMessagesDiv.innerHTML = ''; // Limpia los mensajes existentes
+                    snapshot.forEach((doc) => {
+                        const messageData = doc.data();
+                        const messageElement = document.createElement('div');
+                        messageElement.className = 'chat-message-item bg-gray-800 p-2 rounded-lg mb-2 text-left';
+                        messageElement.innerHTML = `
+                            <strong class="text-blue-300 break-words">${messageData.userId}</strong>: ${messageData.text}
+                            <span class="text-gray-500 text-xs float-right">${messageData.timestamp ? new Date(messageData.timestamp.seconds * 1000).toLocaleTimeString() : ''}</span>
+                        `;
+                        chatMessagesDiv.appendChild(messageElement);
+                    });
+                    // Desplazarse al final del chat
+                    chatMessagesDiv.scrollTop = chatMessagesDiv.scrollHeight;
+                    hideChatMessage(); // Oculta cualquier mensaje de carga o error del chat
+                }, (error) => {
+                    console.error("Error al cargar mensajes del chat:", error);
+                    showChatMessage("Error al cargar mensajes del chat. Inténtalo de nuevo.", 'error');
+                });
+            }
+
+            // Event listener para enviar mensaje
+            if (sendChatButton && chatInput) { // Asegúrate de que ambos elementos existan
+                sendChatButton.addEventListener('click', async () => {
+                    const messageText = chatInput.value.trim();
+                    if (messageText && window.userId && window.db) {
+                        try {
+                            await addDoc(chatCollectionRef, {
+                                userId: window.userId,
+                                text: messageText,
+                                timestamp: serverTimestamp() // Marca de tiempo del servidor para ordenar
+                            });
+                            chatInput.value = ''; // Limpia el input
+                            hideChatMessage();
+                        } catch (e) {
+                            console.error("Error al enviar mensaje:", e);
+                            showChatMessage("Error al enviar mensaje. Asegúrate de tener conexión.", 'error');
+                        }
+                    } else if (!messageText) {
+                        showChatMessage("El mensaje no puede estar vacío.", 'error');
+                    } else {
+                        showChatMessage("No se pudo enviar el mensaje. Inténtalo más tarde.", 'error');
+                    }
+                });
+
+                // Permitir enviar con Enter
+                chatInput.addEventListener('keypress', (e) => {
+                    if (e.key === 'Enter') {
+                        sendChatButton.click();
+                    }
+                });
+            }
+        }
+
+        // Inicializar Firebase cuando el DOM esté completamente cargado
+        document.addEventListener('DOMContentLoaded', () => {
+            try {
+                window.firebaseApp = initializeApp(firebaseConfig);
+                window.db = getFirestore(window.firebaseApp);
+                window.auth = getAuth(window.firebaseApp);
+
+                // Iniciar sesión anónimamente o con token personalizado
+                onAuthStateChanged(window.auth, async (user) => {
+                    if (!user) {
+                        try {
+                            if (initialAuthToken) {
+                                await signInWithCustomToken(window.auth, initialAuthToken);
+                            } else {
+                                await signInAnonymously(window.auth);
+                            }
+                        } catch (error) {
+                            console.error("Firebase Auth Error:", error);
+                            // Fallback a un ID aleatorio si la autenticación falla
+                            window.userId = crypto.randomUUID();
+                            console.log("Sesión iniciada de forma anónima o falló el inicio de sesión. Usando ID aleatorio:", window.userId);
+                        }
+                    }
+                    window.userId = window.auth.currentUser?.uid || crypto.randomUUID();
+                    window.isAuthReady = true;
+                    console.log("Firebase inicializado. ID de usuario:", window.userId);
+                    // Llamar a initChat solo después de que la autenticación esté lista Y el DOM esté cargado
+                    initChat();
+                });
+            } catch (error) {
+                console.error("Error al inicializar Firebase:", error);
+                // Fallback a un ID aleatorio si la inicialización de Firebase falla
+                window.userId = crypto.randomUUID();
+                window.isAuthReady = true;
+                console.log("Falló la inicialización de Firebase. Usando ID aleatorio:", window.userId);
+                initChat(); // Intenta iniciar el chat incluso si Firebase falla (saltará las características de Firestore)
+            }
+        });
+    </script>
+</head>
+<body>
+    <div class="container">
+        <h1 class="text-4xl font-bold text-blue-400 mb-2">Life Squares</h1>
+        <p class="text-gray-400 mb-6">Crea música y chatea en el universo Bytebeat.</p>
+
+        <div class="mb-8">
+            <h2 class="text-2xl font-semibold text-gray-200 mb-4">Generador de Música Bytebeat</h2>
+            <p class="text-gray-400 mb-4">
+                Introduce tu fórmula Bytebeat de JavaScript. Usa <code class="bg-gray-700 p-1 rounded-md text-sm text-gray-200">t</code> (tiempo/índice de muestra)
+                para crear sonidos únicos. La salida debe ser un número.
+            </p>
+
+            <textarea id="bytebeatCode"
+                      class="w-full p-3 border border-gray-600 rounded-lg shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500 mb-4"
+                      placeholder="Ej: (t*5&t>>7)|(t*3&t>>10)"></textarea>
+
+            <div class="flex flex-col sm:flex-row justify-center space-y-4 sm:space-y-0 sm:space-x-4">
+                <button id="playButton"
+                        class="bg-blue-700 hover:bg-blue-800 text-white font-semibold py-3 px-6 rounded-lg shadow-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-opacity-75">
+                    ▶️ Reproducir
+                </button>
+                <button id="stopButton"
+                        class="bg-red-700 hover:bg-red-800 text-white font-semibold py-3 px-6 rounded-lg shadow-md focus:outline-none focus:ring-2 focus:ring-red-500 focus:ring-opacity-75">
+                    ⏹️ Detener
+                </button>
+            </div>
+
+            <div id="messageBox" class="message-box">
+                <!-- Los mensajes de la música se mostrarán aquí -->
+            </div>
+        </div>
+
+        <hr class="border-gray-700 my-8">
+
+        <div>
+            <h2 class="text-2xl font-semibold text-gray-200 mb-4">Chat Global</h2>
+            <p class="text-gray-400 mb-4">
+                Tu ID de Usuario: <span id="displayUserId" class="font-bold text-blue-300 break-words">Cargando...</span>
+            </p>
+            <div id="chatMessages" class="chat-messages w-full p-4 border border-gray-600 rounded-lg shadow-inner mb-4 overflow-y-auto">
+                <!-- Los mensajes del chat se cargarán aquí -->
+                <p class="text-gray-500">Cargando mensajes del chat...</p>
+            </div>
+
+            <div class="flex space-x-2 mb-4">
+                <input type="text" id="chatInput"
+                       class="flex-grow p-3 border border-gray-600 rounded-lg shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                       placeholder="Escribe tu mensaje...">
+                <button id="sendChatButton"
+                        class="bg-green-700 hover:bg-green-800 text-white font-semibold py-3 px-6 rounded-lg shadow-md focus:outline-none focus:ring-2 focus:ring-green-500 focus:ring-opacity-75">
+                    Enviar
+                </button>
+            </div>
+            <div id="chatMessageBox" class="message-box">
+                <!-- Los mensajes del chat (errores/éxito) se mostrarán aquí -->
+            </div>
+        </div>
+
+        <hr class="border-gray-700 my-8">
+
+        <!-- NUEVA SECCIÓN: Escritorio de Suscriptores -->
+        <div>
+            <h2 class="text-2xl font-semibold text-gray-200 mb-4">Escritorio de Suscriptores</h2>
+            <p class="text-gray-400 mb-6">
+                Un espacio conceptual para tus comunidades y suscriptores de Reddit.
+                ¡Imagina tu presencia en la plaza digital!
+            </p>
+            <div class="flex flex-col sm:flex-row justify-center space-y-4 sm:space-y-0 sm:space-x-4">
+                <button class="bg-purple-700 hover:bg-purple-800 text-white font-semibold py-3 px-6 rounded-lg shadow-md focus:outline-none focus:ring-2 focus:ring-purple-500 focus:ring-opacity-75">
+                    📈 Ver Estadísticas de Suscriptores
+                </button>
+                <button class="bg-teal-700 hover:bg-teal-800 text-white font-semibold py-3 px-6 rounded-lg shadow-md focus:outline-none focus:ring-2 focus:ring-teal-500 focus:ring-opacity-75">
+                    ➕ Unirse a Nuevas Comunidades
+                </button>
+                <button class="bg-indigo-700 hover:bg-indigo-800 text-white font-semibold py-3 px-6 rounded-lg shadow-md focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-opacity-75">
+                    ⭐ Mis Suscripciones
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Lógica del Generador de Bytebeat (este bloque no necesita cambios grandes) -->
+    <script type="module">
+        let audioContext;
+        let scriptProcessorNode;
+        let sampleRate = 44100;
+        let currentSampleTime = 0;
+        let isPlaying = false;
+
+        const bytebeatCodeTextArea = document.getElementById('bytebeatCode');
+        const playButton = document.getElementById('playButton');
+        const stopButton = document.getElementById('stopButton');
+        const messageBox = document.getElementById('messageBox'); // Para mensajes del bytebeat
+
+        const defaultBytebeatFormula = "(t*5&t>>7)|(t*3&t>>10)";
+        bytebeatCodeTextArea.value = defaultBytebeatFormula;
+
+        function showMessage(message, type = 'error') {
+            if (messageBox) { // Asegúrate de que el elemento exista
+                messageBox.textContent = message;
+                messageBox.className = `message-box show ${type}`;
+            } else {
+                console.warn("messageBox no encontrado para mostrar el mensaje:", message);
+            }
+        }
+
+        function hideMessage() {
+            if (messageBox) { // Asegúrate de que el elemento exista
+                messageBox.className = 'message-box';
+            }
+        }
+
+        function initAudio() {
+            if (audioContext && audioContext.state === 'running') {
+                audioContext.close();
+            }
+            audioContext = new (window.AudioContext || window.webkitAudioContext)();
+            sampleRate = audioContext.sampleRate;
+
+            scriptProcessorNode = audioContext.createScriptProcessor(0, 1, 1);
+
+            scriptProcessorNode.onaudioprocess = function(event) {
+                if (!isPlaying) return;
+
+                const outputBuffer = event.outputBuffer.getChannelData(0);
+                let formulaFunction;
+
+                try {
+                    // eslint-disable-next-line no-new-func
+                    formulaFunction = new Function('t', `return ${bytebeatCodeTextArea.value};`);
+                } catch (e) {
+                    stopAudio();
+                    showMessage(`Error de sintaxis en la fórmula: ${e.message}`, 'error');
+                    return;
+                }
+
+                for (let i = 0; i < outputBuffer.length; i++) {
+                    let value;
+                    try {
+                        value = formulaFunction(currentSampleTime);
+                        value = parseFloat(value);
+                        if (isNaN(value)) {
+                            value = 0;
+                        }
+                        outputBuffer[i] = Math.max(-1.0, Math.min(1.0, value / 256.0));
+                    } catch (e) {
+                        stopAudio();
+                        showMessage(`Error de ejecución en la fórmula: ${e.message}`, 'error');
+                        for (let j = i; j < outputBuffer.length; j++) {
+                            outputBuffer[j] = 0;
+                        }
+                        return;
+                    }
+                    currentSampleTime++;
+                }
+            };
+
+            currentSampleTime = 0;
+            isPlaying = true;
+        }
+
+        playButton.addEventListener('click', () => {
+            if (!isPlaying) {
+                hideMessage();
+                initAudio();
+                scriptProcessorNode.connect(audioContext.destination);
+                showMessage('Reproduciendo...', 'success');
+            } else {
+                showMessage('Ya está reproduciendo.', 'success');
+            }
+        });
+
+        stopButton.addEventListener('click', () => {
+            stopAudio();
+            showMessage('Detenido.', 'success');
+        });
+
+        function stopAudio() {
+            if (isPlaying) {
+                isPlaying = false;
+                if (scriptProcessorNode) {
+                    scriptProcessorNode.disconnect();
+                }
+                if (audioContext) {
+                    audioContext.close().then(() => {
+                        audioContext = null;
+                        scriptProcessorNode = null;
+                        currentSampleTime = 0;
+                    });
+                }
+            }
+        }
+
+        window.addEventListener('beforeunload', stopAudio);
+    </script>
+</body>
+</html>
